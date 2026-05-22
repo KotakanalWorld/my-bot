@@ -1,0 +1,13 @@
+{
+  "name": "telebot-creator-server",
+  "version": "1.0.0",
+  "description": "TeleBot Creator server for 24/7 bot hosting",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
