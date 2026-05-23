@@ -558,4 +558,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`TeleBot Creator Server running on port ${PORT}`);
   console.log(`SERVER_KEY: ${SERVER_KEY}`);
+  console.log(`SUPABASE_URL: ${SUPABASE_URL || 'NOT SET'}`);
+  console.log(`SUPABASE_SERVICE_KEY: ${SUPABASE_KEY ? 'SET ('+SUPABASE_KEY.slice(0,20)+'...)' : 'NOT SET'}`);
 });
