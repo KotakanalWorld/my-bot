@@ -265,6 +265,70 @@ async function runFlow(botId, bot, msg, flow, allFlows) {
           addLog(botId,'🎲 Random: '+result,'sys'); break;
         }
 
+        // ── AI BLOCKS ────────────────────────────────────────────────────────
+        case 'groq': {
+          if (!c.api_key) { addLog(botId,'⚠ Groq: API key not set','err'); break; }
+          const model   = c.model || 'llama-3.3-70b-versatile';
+          const sysText = s(c.prompt || 'You are a helpful assistant. Reply briefly.');
+          const userMsg = msg.text || '';
+          const ctxMode = c.context_mode || 'last';
+          const maxHist = parseInt(c.max_history || 10);
+          const session = c.session_id || 'default';
+          const ctxKey  = String(msg.from?.id||chatId)+':'+String(chatId)+':groq:'+session;
+
+          addLog(botId,'🤖 Groq → '+model, 'sys');
+
+          const messages = [{ role:'system', content: sysText }];
+          if (ctxMode === 'history') {
+            // get history from a simple in-memory map
+            if (!global._groqCtx) global._groqCtx = new Map();
+            messages.push(...(global._groqCtx.get(botId+':'+ctxKey)||[]));
+            if (userMsg.trim()) messages.push({role:'user', content: userMsg});
+          } else {
+            messages.push({role:'user', content: userMsg.trim() || 'Hello'});
+          }
+
+          try {
+            await bot.sendChatAction(chatId, 'typing').catch(()=>{});
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+              method:'POST',
+              headers:{'Content-Type':'application/json','Authorization':'Bearer '+c.api_key},
+              body: JSON.stringify({model, messages, max_tokens:parseInt(c.max_tokens||1024), temperature:parseFloat(c.temperature||1.0)})
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              const em = data.error?.message || 'error '+res.status;
+              addLog(botId,'⚠ Groq error: '+em,'err');
+              if(c.send_response!==false) await bot.sendMessage(chatId, '⚠ AI error: '+em);
+              break;
+            }
+            const reply = data.choices?.[0]?.message?.content || '(no response)';
+            if (ctxMode==='history') {
+              if (!global._groqCtx) global._groqCtx = new Map();
+              const hist = global._groqCtx.get(botId+':'+ctxKey) || [];
+              if(userMsg.trim()) hist.push({role:'user',content:userMsg});
+              hist.push({role:'assistant',content:reply});
+              while(hist.length>maxHist*2) hist.splice(0,2);
+              global._groqCtx.set(botId+':'+ctxKey, hist);
+              addLog(botId,'🧠 Groq history: '+(hist.length/2)+' turns','sys');
+            }
+            if (c.save_to) setVar(botId, chatId, c.save_to, reply, 'local');
+            if (c.send_response!==false) {
+              await bot.sendMessage(chatId, reply);
+              addLog(botId,'⚡ Groq reply sent: '+reply.substring(0,60),'out');
+            } else {
+              addLog(botId,'⚡ Groq: '+reply.substring(0,60),'out');
+            }
+          } catch(e) { addLog(botId,'⚠ Groq exception: '+e.message,'err'); }
+          break;
+        }
+        case 'groq_clear': {
+          if (!global._groqCtx) break;
+          const prefix = botId+':'+String(msg.from?.id||chatId)+':'+String(chatId)+':groq:';
+          for (const k of global._groqCtx.keys()) { if(k.startsWith(prefix)) global._groqCtx.delete(k); }
+          addLog(botId,'🗑 Groq history cleared','sys'); break;
+        }
+
         // ── PAYMENT BLOCKS ───────────────────────────────────────────────────
         case 'stars_payment': {
           await bot.sendInvoice(chatId, s(c.title||'Premium'), s(c.description||'Premium 30 days'), c.payload||'premium_30', '', 'XTR', [{label:'Premium',amount:parseInt(c.amount||100)}]);
@@ -464,100 +528,4 @@ app.post('/api/start', auth, async (req, res) => {
       const flow = await matchFlow(botId, chatId, msg, allFlows);
       if (flow) {
         addLog(botId, '⚡ Flow: '+flow.name, 'sys');
-        await runFlow(botId, bot, msg, flow, allFlows).catch(e=>addLog(botId,'⚠ Flow error: '+e.message,'err'));
-      }
-    });
-
-    // ── Callback queries ──────────────────────────────────────────────────────
-    bot.on('callback_query', async (query) => {
-      const msg = {...query.message, from: query.from, callback_data: query.data};
-      const chatId = msg.chat.id;
-      await bot.answerCallbackQuery(query.id).catch(()=>{});
-
-      // Direct flow buttons
-      if (query.data?.startsWith('__flow__')) {
-        const flowId = query.data.replace('__flow__','');
-        const target = allFlows.find(f=>f.id===flowId);
-        if (target) await runFlow(botId, bot, msg, target, allFlows).catch(e=>addLog(botId,'⚠ '+e.message,'err'));
-        return;
-      }
-
-      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_cb'&&f.blocks[0]?.config?.data===query.data);
-      if (flow) {
-        addLog(botId, '⚡ Callback: '+query.data, 'sys');
-        await runFlow(botId, bot, msg, flow, allFlows).catch(e=>addLog(botId,'⚠ '+e.message,'err'));
-      }
-    });
-
-    // ── Group events ──────────────────────────────────────────────────────────
-    bot.on('new_chat_members', async (msg) => {
-      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_join');
-      if (flow) await runFlow(botId, bot, msg, flow, allFlows).catch(()=>{});
-    });
-    bot.on('left_chat_member', async (msg) => {
-      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_leave');
-      if (flow) await runFlow(botId, bot, msg, flow, allFlows).catch(()=>{});
-    });
-
-    bot.on('polling_error', (e) => addLog(botId, '⚠ Polling: '+e.message, 'err'));
-
-    runningBots.set(botId, { bot, startedAt: Date.now() });
-    res.json({ ok: true, message: 'Bot started' });
-
-  } catch(e) {
-    addLog(botId, '❌ Start failed: '+e.message, 'err');
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Stop bot
-app.post('/api/stop', auth, (req, res) => {
-  const { botId } = req.body;
-  if (runningBots.has(botId)) {
-    try { runningBots.get(botId).bot.stopPolling(); } catch(_) {}
-    runningBots.delete(botId);
-    addLog(botId, '⛔ Bot stopped', 'sys');
-    res.json({ ok: true });
-  } else {
-    res.status(404).json({ error: 'Bot not running' });
-  }
-});
-
-// Status
-app.get('/api/status/:botId', auth, (req, res) => {
-  const data = runningBots.get(req.params.botId);
-  res.json({ running: !!data, startedAt: data?.startedAt || null });
-});
-
-// Logs
-app.get('/api/logs/:botId', auth, (req, res) => {
-  const since = parseInt(req.query.since || '0');
-  const logs   = (botLogs.get(req.params.botId) || []).filter(l => l.ts > since);
-  res.json({ logs });
-});
-
-// List all running bots
-app.get('/api/bots', auth, (req, res) => {
-  const bots = [...runningBots.entries()].map(([id, data]) => ({
-    id, startedAt: data.startedAt, logs: (botLogs.get(id)||[]).length
-  }));
-  res.json({ bots });
-});
-
-// Root — health page
-app.get('/', (req, res) => {
-  res.send(`
-    <h2>🤖 TeleBot Creator Server</h2>
-    <p>Running ${runningBots.size} bot(s)</p>
-    <p>Connect from Telebot Creator → ☁️ Server button</p>
-    <p>Server Key: set <code>SERVER_KEY</code> environment variable on Render</p>
-  `);
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`TeleBot Creator Server running on port ${PORT}`);
-  console.log(`SERVER_KEY: ${SERVER_KEY}`);
-  console.log(`SUPABASE_URL: ${SUPABASE_URL || 'NOT SET'}`);
-  console.log(`SUPABASE_SERVICE_KEY: ${SUPABASE_KEY ? 'SET ('+SUPABASE_KEY.slice(0,20)+'...)' : 'NOT SET'}`);
-});
+        aw
