@@ -16,6 +16,30 @@ const app        = express();
 
 app.use(express.json({ limit: '10mb' }));
 
+// ── Supabase (for saving premium codes) ──────────────────────────────────────
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+
+async function supabaseInsert(table, data) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(data)
+    });
+    return res.ok ? await res.json() : null;
+  } catch(e) {
+    console.error('Supabase error:', e.message);
+    return null;
+  }
+}
+
 // ── CORS (allow requests from any origin) ────────────────────────────────────
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -256,6 +280,21 @@ async function runFlow(botId, bot, msg, flow, allFlows) {
         case 'send_receipt': {
           const code=(c.prefix||'TC')+'-'+Math.random().toString(36).slice(2,6).toUpperCase()+'-'+Math.random().toString(36).slice(2,6).toUpperCase();
           if (c.save_to) setVar(botId, chatId, c.save_to, code, 'local');
+          // Save code to Supabase so user can redeem on site
+          const userEmail = getVar(botId, chatId, '__email__', 'local') || '';
+          const expires = new Date(Date.now()+30*24*60*60*1000).toISOString();
+          const saved = await supabaseInsert('premium_codes', {
+            code,
+            email: userEmail || 'pending',
+            granted_by: 'bot_payment',
+            expires_at: expires,
+            used_at: null
+          });
+          if (saved) {
+            addLog(botId,'✅ Code saved to Supabase: '+code,'sys');
+          } else {
+            addLog(botId,'⚠ Supabase not configured — code generated but not saved to DB','err');
+          }
           if (c.send_to_user!==false) {
             const text = s((c.text||'🧾 Your receipt: {{receipt}}').replace('{{receipt}}', code));
             await bot.sendMessage(chatId, text, {parse_mode:'HTML'});
