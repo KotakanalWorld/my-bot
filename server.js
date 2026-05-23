@@ -323,6 +323,9 @@ async function matchFlow(botId, chatId, msg, flows) {
         const hit=c.op==='='?vv===cv:c.op==='!='?vv!==cv:c.op==='contains'?vv.includes(cv):c.op==='>'?+vv>+cv:c.op==='<'?+vv<+cv:false;
         if(hit) return flow; break;
       }
+      case 'on_payment':
+        // This trigger is handled separately in the successful_payment block above
+        break;
       case 'on_username': {
         const c=t.config||{};
         const uname=(msg.from?.username||'').toLowerCase();
@@ -398,12 +401,24 @@ app.post('/api/start', auth, async (req, res) => {
 
       // Handle successful_payment
       if (msg.successful_payment) {
-        addLog(botId, '💰 Payment: '+msg.successful_payment.invoice_payload, 'sys');
+        const payload = msg.successful_payment.invoice_payload;
+        addLog(botId, '💰 Payment received! payload: '+payload, 'sys');
+        // Look for on_payment trigger (any payload or matching payload)
         const payFlow = allFlows.find(f=>{
           const t=f.blocks?.[0];
-          return t?.type==='on_cb'&&t?.config?.data===msg.successful_payment.invoice_payload;
+          if (t?.type==='on_payment') {
+            // Match if no payload filter, or payload matches
+            return !t.config?.payload || t.config.payload===payload;
+          }
+          // Fallback: old on_cb style
+          return t?.type==='on_cb' && t?.config?.data===payload;
         });
-        if (payFlow) await runFlow(botId, bot, msg, payFlow, allFlows);
+        if (payFlow) {
+          addLog(botId, '⚡ Running payment flow: '+payFlow.name, 'sys');
+          await runFlow(botId, bot, msg, payFlow, allFlows);
+        } else {
+          addLog(botId, '⚠ No flow found for payload: '+payload+'. Create a flow with "Payment received ⭐" trigger!', 'err');
+        }
         return;
       }
 
