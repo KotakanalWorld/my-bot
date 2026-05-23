@@ -528,4 +528,100 @@ app.post('/api/start', auth, async (req, res) => {
       const flow = await matchFlow(botId, chatId, msg, allFlows);
       if (flow) {
         addLog(botId, '⚡ Flow: '+flow.name, 'sys');
-        aw
+        await runFlow(botId, bot, msg, flow, allFlows).catch(e=>addLog(botId,'⚠ Flow error: '+e.message,'err'));
+      }
+    });
+
+    // ── Callback queries ──────────────────────────────────────────────────────
+    bot.on('callback_query', async (query) => {
+      const msg = {...query.message, from: query.from, callback_data: query.data};
+      const chatId = msg.chat.id;
+      await bot.answerCallbackQuery(query.id).catch(()=>{});
+
+      // Direct flow buttons
+      if (query.data?.startsWith('__flow__')) {
+        const flowId = query.data.replace('__flow__','');
+        const target = allFlows.find(f=>f.id===flowId);
+        if (target) await runFlow(botId, bot, msg, target, allFlows).catch(e=>addLog(botId,'⚠ '+e.message,'err'));
+        return;
+      }
+
+      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_cb'&&f.blocks[0]?.config?.data===query.data);
+      if (flow) {
+        addLog(botId, '⚡ Callback: '+query.data, 'sys');
+        await runFlow(botId, bot, msg, flow, allFlows).catch(e=>addLog(botId,'⚠ '+e.message,'err'));
+      }
+    });
+
+    // ── Group events ──────────────────────────────────────────────────────────
+    bot.on('new_chat_members', async (msg) => {
+      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_join');
+      if (flow) await runFlow(botId, bot, msg, flow, allFlows).catch(()=>{});
+    });
+    bot.on('left_chat_member', async (msg) => {
+      const flow = allFlows.find(f=>f.blocks?.[0]?.type==='on_leave');
+      if (flow) await runFlow(botId, bot, msg, flow, allFlows).catch(()=>{});
+    });
+
+    bot.on('polling_error', (e) => addLog(botId, '⚠ Polling: '+e.message, 'err'));
+
+    runningBots.set(botId, { bot, startedAt: Date.now() });
+    res.json({ ok: true, message: 'Bot started' });
+
+  } catch(e) {
+    addLog(botId, '❌ Start failed: '+e.message, 'err');
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Stop bot
+app.post('/api/stop', auth, (req, res) => {
+  const { botId } = req.body;
+  if (runningBots.has(botId)) {
+    try { runningBots.get(botId).bot.stopPolling(); } catch(_) {}
+    runningBots.delete(botId);
+    addLog(botId, '⛔ Bot stopped', 'sys');
+    res.json({ ok: true });
+  } else {
+    res.status(404).json({ error: 'Bot not running' });
+  }
+});
+
+// Status
+app.get('/api/status/:botId', auth, (req, res) => {
+  const data = runningBots.get(req.params.botId);
+  res.json({ running: !!data, startedAt: data?.startedAt || null });
+});
+
+// Logs
+app.get('/api/logs/:botId', auth, (req, res) => {
+  const since = parseInt(req.query.since || '0');
+  const logs   = (botLogs.get(req.params.botId) || []).filter(l => l.ts > since);
+  res.json({ logs });
+});
+
+// List all running bots
+app.get('/api/bots', auth, (req, res) => {
+  const bots = [...runningBots.entries()].map(([id, data]) => ({
+    id, startedAt: data.startedAt, logs: (botLogs.get(id)||[]).length
+  }));
+  res.json({ bots });
+});
+
+// Root — health page
+app.get('/', (req, res) => {
+  res.send(`
+    <h2>🤖 TeleBot Creator Server</h2>
+    <p>Running ${runningBots.size} bot(s)</p>
+    <p>Connect from Telebot Creator → ☁️ Server button</p>
+    <p>Server Key: set <code>SERVER_KEY</code> environment variable on Render</p>
+  `);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`TeleBot Creator Server running on port ${PORT}`);
+  console.log(`SERVER_KEY: ${SERVER_KEY}`);
+  console.log(`SUPABASE_URL: ${SUPABASE_URL || 'NOT SET'}`);
+  console.log(`SUPABASE_SERVICE_KEY: ${SUPABASE_KEY ? 'SET ('+SUPABASE_KEY.slice(0,20)+'...)' : 'NOT SET'}`);
+});
