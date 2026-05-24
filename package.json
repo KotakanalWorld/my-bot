@@ -1,8 +1,6 @@
 {
-  "name": "telebot-creator-server",
+  "name": "telebot-server",
   "version": "1.0.0",
-  "description": "TeleBot Creator server for 24/7 bot hosting",
-  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
