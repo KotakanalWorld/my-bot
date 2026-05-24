@@ -24,7 +24,7 @@ app.use((req,res,next)=>{
 });
 
 // Auth
-const SERVER_KEY = process.env.SERVER_KEY || 'tc-key-xd117doh';
+const SERVER_KEY = process.env.SERVER_KEY || 'my-server-key';
 const auth = (req,res,next) => {
   if(req.headers['x-server-key']!==SERVER_KEY) return res.status(401).json({error:'Wrong key'});
   next();
