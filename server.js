@@ -80,6 +80,7 @@ function buildKb(buttons){
 async function runFlow(bid,bot,msg,flow,allFlows){
   const chatId=msg.chat?.id;
   const s=t=>sub(bid,chatId,msg,t);
+  let lastMsgId = msg.message_id || 0;
   for(let i=1;i<(flow.blocks||[]).length;i++){
     const b=flow.blocks[i];const c=b.config||{};
     try{
@@ -90,7 +91,8 @@ async function runFlow(bid,bot,msg,flow,allFlows){
           if(c.no_preview) opts.disable_web_page_preview=true;
           const kb=buildKb(c.buttons);
           if(kb) opts.reply_markup=kb;
-          await bot.sendMessage(chatId,s(c.text||''),opts);
+          const r = await bot.sendMessage(chatId,s(c.text||''),opts);
+          if(r?.message_id) lastMsgId = r.message_id;
           log(bid,'📤 '+s(c.text||'').substring(0,40),'out');break;
         }
         case'send_img':   await bot.sendPhoto(chatId,s(c.url||''),{caption:s(c.caption||'')});break;
@@ -139,7 +141,13 @@ async function runFlow(bid,bot,msg,flow,allFlows){
         case'kick':   await bot.banChatMember(chatId,msg.from?.id).catch(()=>{});await sleep(300);await bot.unbanChatMember(chatId,msg.from?.id).catch(()=>{});break;
         case'mute':   await bot.restrictChatMember(chatId,msg.from?.id,{permissions:{can_send_messages:false}}).catch(()=>{});break;
         case'unmute': await bot.restrictChatMember(chatId,msg.from?.id,{permissions:{can_send_messages:true,can_send_media_messages:true,can_send_other_messages:true}}).catch(()=>{});break;
-        case'del_user_msg': if(msg.message_id) await bot.deleteMessage(chatId,msg.message_id).catch(()=>{});break;
+        case'del_msg':
+        case'del_user_msg': {
+          const target = c.target || (b.type==='del_user_msg'?'user':'last');
+          const delId = target==='user' ? msg.message_id : target==='id' ? parseInt(c.msg_id) : lastMsgId;
+          if(delId) await bot.deleteMessage(chatId, delId).catch(e=>addLog(botId,'⚠ delete: '+e.message,'err'));
+          addLog(botId,'🗑 Deleted msg '+delId,'out'); break;
+        }
         case'http':{
           const opts={method:c.method||'GET'};
           if(c.headers) try{opts.headers=JSON.parse(c.headers)}catch(_){}
@@ -248,7 +256,14 @@ app.post('/api/start',auth,async(req,res)=>{
   if(!botId||!token) return res.status(400).json({error:'Missing botId or token'});
   if(bots.has(botId)){try{bots.get(botId).bot.stopPolling()}catch(_){}; bots.delete(botId);}
   try{
-    const bot=new TelegramBot(token,{polling:true});
+    const bot=new TelegramBot(token,{
+      polling:{
+        params:{
+          timeout:20,
+          allowed_updates:['message','callback_query','pre_checkout_query','chat_member','my_chat_member']
+        }
+      }
+    });
     logs.set(botId,[]);
     log(botId,'✅ Bot started','sys');
     const allFlows=flows||[];
